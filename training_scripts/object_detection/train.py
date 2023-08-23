@@ -31,7 +31,7 @@ WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
 
 from deeplite_torch_zoo import get_eval_function, get_dataloaders, get_model
 
-from deeplite_torch_zoo.src.object_detection.yolov5.losses.yolov5_loss import YOLOv5Loss
+from deeplite_torch_zoo.src.object_detection.yolo.losses import YOLOv5Loss
 from deeplite_torch_zoo.utils import strip_optimizer, LOGGER, TQDM_BAR_FORMAT, colorstr, increment_path, \
     init_seeds, one_cycle, print_args, yaml_save, check_img_size, \
     EarlyStopping, ModelEMA, de_parallel, select_device, smart_DDP, smart_optimizer
@@ -271,6 +271,8 @@ def train(opt, device):  # hyp is path/to/hyp.yaml or hyp dictionary
                 pbar.set_description(('%11s' * 2 + '%11.4g' * 5) %
                                      (f'{epoch}/{epochs - 1}', mem, *mloss, targets.shape[0], imgs.shape[-1]))
             # end batch ------------------------------------------------------------------------------------------------
+            if opt.dryrun and opt.dataset == 'voc':
+                break
 
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for loggers
@@ -287,6 +289,7 @@ def train(opt, device):  # hyp is path/to/hyp.yaml or hyp dictionary
                     half=amp,
                     single_cls=single_cls,
                     compute_loss=compute_loss,
+                    device='cuda' if not opt.dryrun else 'cpu',
                 )
 
             # Update best mAP
@@ -296,7 +299,7 @@ def train(opt, device):  # hyp is path/to/hyp.yaml or hyp dictionary
                 best_fitness = fi
 
             # Save model
-            if (not nosave) or final_epoch:  # if save
+            if (not opt.dryrun) or (not nosave) or final_epoch:  # if save
                 ckpt = {
                     'epoch': epoch,
                     'best_fitness': best_fitness,
@@ -321,12 +324,12 @@ def train(opt, device):  # hyp is path/to/hyp.yaml or hyp dictionary
             dist.broadcast_object_list(broadcast_list, 0)  # broadcast 'stop' to all ranks
             if RANK != 0:
                 stop = broadcast_list[0]
-        if stop:
+        if stop or opt.dryrun:
             break  # must break all DDP ranks
 
         # end epoch ----------------------------------------------------------------------------------------------------
     # end training -----------------------------------------------------------------------------------------------------
-    if RANK in {-1, 0}:
+    if RANK in {-1, 0} and not opt.dryrun:
         LOGGER.info(f'\n{epoch - start_epoch + 1} epochs completed in {(time.time() - t0) / 3600:.3f} hours.')
         for f in last, best:
             if f.exists():
@@ -385,6 +388,8 @@ def parse_opt(known=False):
     parser.add_argument('--seed', type=int, default=0, help='Global training seed')
     parser.add_argument('--no_amp', action='store_true')
     parser.add_argument('--local_rank', type=int, default=-1, help='Automatic DDP Multi-GPU argument, do not modify')
+
+    parser.add_argument('--dryrun', action='store_true', help='Dry run mode for testing')
 
     return parser.parse_known_args()[0] if known else parser.parse_args()
 
